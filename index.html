@@ -69,6 +69,11 @@
       }
       .slower {
         color: #e74c3c;
+        font-weight: bold;
+      }
+      .equal {
+        color: #666;
+        font-weight: bold;
       }
       .progress {
         width: 100%;
@@ -82,6 +87,14 @@
         height: 100%;
         background-color: #4caf50;
         transition: width 0.1s;
+      }
+      .score-display {
+        text-align: center;
+        font-size: 1.2em;
+        margin-bottom: 20px;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 8px;
       }
     </style>
   </head>
@@ -108,6 +121,11 @@
       </button>
     </div>
 
+    <div class="score-display">
+      Score - WebAssembly: <span id="wasmScore">0</span> | JavaScript:
+      <span id="jsScore">0</span>
+    </div>
+
     <div class="container">
       <div class="panel">
         <h2>WebAssembly</h2>
@@ -125,6 +143,183 @@
       </div>
     </div>
 
-    <script src="index.js"></script>
+    <div
+      id="comparisonResult"
+      class="stats"
+      style="text-align: center; margin-top: 20px"
+    ></div>
+
+    <script>
+      // Score tracking
+      let wasmWins = 0;
+      let jsWins = 0;
+      let lastNumber = null;
+
+      // JavaScript implementation
+      function fibonacciJS(n) {
+        if (n <= 1) return n;
+
+        let prev = 0n;
+        let current = 1n;
+
+        for (let i = 2; i <= n; i++) {
+          const next = prev + current;
+          prev = current;
+          current = next;
+        }
+
+        return current;
+      }
+
+      // WebAssembly loading
+      let wasmInstance = null;
+
+      WebAssembly.instantiateStreaming(fetch("fibonacci.wasm")).then((obj) => {
+        wasmInstance = obj.instance;
+      });
+
+      function formatExecutionTime(time) {
+        if (time < 0.001) {
+          return `${(time * 1_000_000).toFixed(3)} ns`;
+        } else if (time < 1) {
+          return `${(time * 1_000).toFixed(3)} μs`;
+        }
+        return `${time.toFixed(6)} ms`;
+      }
+
+      function calculateStats(times) {
+        const sum = times.reduce((a, b) => a + b, 0);
+        const avg = sum / times.length;
+        return { avg };
+      }
+
+      async function benchmark(type, input, iterations) {
+        document.getElementById(`${type}Progress`).style.display = "block";
+        const progressBar = document.getElementById(`${type}ProgressBar`);
+
+        const times = [];
+        let result;
+
+        // Warm-up run
+        if (type === "wasm") {
+          wasmInstance.exports.fibonacci(input);
+        } else {
+          fibonacciJS(input);
+        }
+
+        for (let i = 0; i < iterations; i++) {
+          const start = performance.now();
+
+          if (type === "wasm") {
+            result = wasmInstance.exports.fibonacci(input);
+          } else {
+            result = fibonacciJS(input);
+          }
+
+          const end = performance.now();
+          times.push(end - start);
+
+          if (i % 10 === 0) {
+            progressBar.style.width = `${(i / iterations) * 100}%`;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
+
+        progressBar.style.width = "100%";
+        setTimeout(() => {
+          document.getElementById(`${type}Progress`).style.display = "none";
+          progressBar.style.width = "0%";
+        }, 500);
+
+        const stats = calculateStats(times);
+        return { result, stats };
+      }
+
+      async function runComparison() {
+        const input = parseInt(document.getElementById("number").value);
+        const iterations = parseInt(
+          document.getElementById("iterationCount").value
+        );
+
+        // Reset scores if number changed
+        if (lastNumber !== input) {
+          wasmWins = 0;
+          jsWins = 0;
+          document.getElementById("wasmScore").textContent = "0";
+          document.getElementById("jsScore").textContent = "0";
+          lastNumber = input;
+        }
+
+        if (input > 78) {
+          alert("Please enter a number <= 78 to avoid overflow");
+          return;
+        }
+
+        const compareButton = document.getElementById("compareButton");
+        compareButton.disabled = true;
+        compareButton.textContent = "Running Benchmark...";
+
+        // Reset results
+        document.getElementById("wasmResult").innerHTML =
+          "Running WebAssembly benchmark...";
+        document.getElementById("jsResult").innerHTML = "Waiting...";
+        document.getElementById("comparisonResult").innerHTML = "";
+
+        // Run WebAssembly benchmark
+        const wasmResults = await benchmark("wasm", input, iterations);
+
+        document.getElementById("wasmResult").innerHTML = `
+          <div>Result: ${wasmResults.result}</div>
+          <div class="stats">
+            <div>Average: <span class="timing">${formatExecutionTime(
+              wasmResults.stats.avg
+            )}</span></div>
+          </div>
+        `;
+
+        document.getElementById("jsResult").innerHTML =
+          "Running JavaScript benchmark...";
+
+        // Run JavaScript benchmark
+        const jsResults = await benchmark("js", input, iterations);
+
+        document.getElementById("jsResult").innerHTML = `
+          <div>Result: ${jsResults.result}</div>
+          <div class="stats">
+            <div>Average: <span class="timing">${formatExecutionTime(
+              jsResults.stats.avg
+            )}</span></div>
+          </div>
+        `;
+
+        // Calculate speedup and update scores
+        const speedup = jsResults.stats.avg / wasmResults.stats.avg;
+        const THRESHOLD = 1.1; // 10% difference threshold for considering results comparable
+
+        let comparisonHtml = "";
+        if (speedup > THRESHOLD) {
+          comparisonHtml = `<div class="faster">WebAssembly is ${speedup.toFixed(
+            2
+          )}x faster than JavaScript</div>`;
+          wasmWins++;
+          document.getElementById("wasmScore").textContent = wasmWins;
+        } else if (speedup < 1 / THRESHOLD) {
+          comparisonHtml = `<div class="slower">JavaScript is ${(
+            1 / speedup
+          ).toFixed(2)}x faster than WebAssembly</div>`;
+          jsWins++;
+          document.getElementById("jsScore").textContent = jsWins;
+        } else {
+          comparisonHtml = `<div class="equal">Performance is comparable (${speedup.toFixed(
+            2
+          )}x difference)</div>`;
+        }
+
+        document.getElementById("comparisonResult").innerHTML = comparisonHtml;
+
+        compareButton.disabled = false;
+        compareButton.textContent = "Run Comparison";
+      }
+    </script>
   </body>
 </html>
